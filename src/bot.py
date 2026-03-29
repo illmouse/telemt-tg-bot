@@ -37,7 +37,11 @@ class _RedactToken(logging.Filter):
     def filter(self, record: logging.LogRecord) -> bool:
         if self._token:
             record.msg = str(record.msg).replace(self._token, "***")
-            record.args = None
+            if record.args:
+                record.args = tuple(
+                    str(a).replace(self._token, "***") if isinstance(a, str) else a
+                    for a in (record.args if isinstance(record.args, tuple) else (record.args,))
+                )
         return True
 
 
@@ -441,10 +445,14 @@ def main():
         per_message=False,
     )
 
+    async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+        logger.error("Unhandled exception", exc_info=context.error)
+
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(conv)
     app.add_handler(MessageHandler(filters.Text(["👥 List Users"]), list_users))
     app.add_handler(CallbackQueryHandler(on_callback))
+    app.add_error_handler(on_error)
 
     app.run_polling()
 
