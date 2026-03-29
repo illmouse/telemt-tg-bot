@@ -66,6 +66,7 @@ LINK_HOST = os.environ.get("LINK_HOST", "").strip()
 
 # Conversation states
 WAITING_FOR_USERNAME = 1
+WAITING_FOR_MAX_IPS = 2
 WAITING_FOR_PATCH_IPS = 3
 
 USERNAME_RE = re.compile(r"^[A-Za-z0-9_.\-]{1,64}$")
@@ -79,15 +80,11 @@ CANCEL_KB = InlineKeyboardMarkup(
     [[InlineKeyboardButton("✖ Cancel", callback_data="cancel_conv")]]
 )
 
-MAX_IPS_KB = InlineKeyboardMarkup([
-    [
-        InlineKeyboardButton("1 (default)", callback_data="maxips:1"),
-        InlineKeyboardButton("2", callback_data="maxips:2"),
-        InlineKeyboardButton("5", callback_data="maxips:5"),
-        InlineKeyboardButton("Unlimited", callback_data="maxips:0"),
-    ],
-    [InlineKeyboardButton("✖ Cancel", callback_data="cancel_conv")],
-])
+MAX_IPS_KB = ReplyKeyboardMarkup(
+    [["1", "2", "5", "Unlimited"]],
+    resize_keyboard=True,
+    one_time_keyboard=True,
+)
 
 # max_tcp_conns value used to re-enable a disabled user
 ENABLED_TCP_CONNS = 65535
@@ -150,36 +147,28 @@ def user_keyboard(username: str, user: dict) -> InlineKeyboardMarkup:
     ])
 
 
+def _rewrite_link(link: str) -> str:
+    """Rewrite server= in a tg://proxy link to LINK_HOST if configured."""
+    if not LINK_HOST:
+        return link
+    parsed = urlparse(link)
+    params = parse_qs(parsed.query, keep_blank_values=True)
+    params["server"] = [LINK_HOST]
+    return parsed._replace(query=urlencode({k: v[0] for k, v in params.items()})).geturl()
+
+
 def proxy_message(user: dict) -> tuple[str, InlineKeyboardMarkup | None]:
+    """Returns (text, keyboard) for a forwardable proxy link message."""
     links = user.get("links", {})
     username = user["username"]
     rows = []
 
-    def pick_link(lst: list[str]) -> list[str]:
-        if not lst:
-            return []
-        link = lst[0]
-        if LINK_HOST:
-            parsed = urlparse(link)
-            params = parse_qs(parsed.query, keep_blank_values=True)
-            params["server"] = [LINK_HOST]
-            new_query = urlencode({k: v[0] for k, v in params.items()})
-            link = parsed._replace(query=new_query).geturl()
-        return [link]
-
-    secure = pick_link(links.get("secure", []))
-    classic = pick_link(links.get("classic", []))
-    tls = pick_link(links.get("tls", []))
-
-    for i, link in enumerate(secure):
-        label = "🔒 Secure" if len(secure) == 1 else f"🔒 Secure {i + 1}"
-        rows.append([InlineKeyboardButton(label, url=link)])
-    for i, link in enumerate(classic):
-        label = "📡 Classic" if len(classic) == 1 else f"📡 Classic {i + 1}"
-        rows.append([InlineKeyboardButton(label, url=link)])
-    for i, link in enumerate(tls):
-        label = "🔐 TLS" if len(tls) == 1 else f"🔐 TLS {i + 1}"
-        rows.append([InlineKeyboardButton(label, url=link)])
+    for link in (links.get("secure") or [])[:1]:
+        rows.append([InlineKeyboardButton("🔒 Secure", url=_rewrite_link(link))])
+    for link in (links.get("classic") or [])[:1]:
+        rows.append([InlineKeyboardButton("📡 Classic", url=_rewrite_link(link))])
+    for link in (links.get("tls") or [])[:1]:
+        rows.append([InlineKeyboardButton("🔐 TLS", url=_rewrite_link(link))])
 
     text = f"🔒 <b>MTProxy</b>\nUser: <code>{username}</code>"
     return text, (InlineKeyboardMarkup(rows) if rows else None)
@@ -231,10 +220,43 @@ async def create_receive_username(update: Update, context: ContextTypes.DEFAULT_
 
     context.user_data["new_username"] = username
     await update.message.reply_text(
-        f"Max unique IPs for <b>{username}</b>:",
+        f"Max unique IPs for <b>{username}</b> (or type a number):",
         parse_mode=ParseMode.HTML,
         reply_markup=MAX_IPS_KB,
     )
+    return WAITING_FOR_MAX_IPS
+
+
+@require_access
+async def create_receive_max_ips(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text.strip()
+    username = context.user_data.get("new_username")
+    logger.info("create_receive_max_ips username=%r value=%r", username, text)
+
+    if text.lower() == "unlimited":
+        max_ips = 0
+    elif text.isdigit():
+        max_ips = int(text)
+    else:
+        await update.message.reply_text("Enter a number or tap a button:", reply_markup=MAX_IPS_KB)
+        return WAITING_FOR_MAX_IPS
+
+    try:
+        result = api.create_user(username, max_unique_ips=max_ips)
+    except Exception as e:
+        await update.message.reply_text(f"Error: {e}", reply_markup=MAIN_KEYBOARD)
+        return ConversationHandler.END
+
+    context.user_data.pop("new_username", None)
+    user = result["user"]
+    await update.message.reply_text(
+        f"✅ Created\n\n{fmt_user_info(user)}",
+        parse_mode=ParseMode.HTML,
+        reply_markup=MAIN_KEYBOARD,
+    )
+    text_msg, kb = proxy_message(user)
+    if text_msg:
+        await update.message.reply_text(text_msg, parse_mode=ParseMode.HTML, reply_markup=kb)
     return ConversationHandler.END
 
 
@@ -333,8 +355,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode=ParseMode.HTML,
         )
         text, kb = proxy_message(user)
-        if kb:
-            await q.message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=kb)
+        await q.message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=kb)
 
     elif data == "back_list":
         try:
@@ -366,11 +387,9 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await q.message.edit_text(f"Error: {e}")
             return
         text, kb = proxy_message(user)
-        back_kb = InlineKeyboardMarkup(
-            list(kb.inline_keyboard if kb else [])
-            + [[InlineKeyboardButton("◀ Back", callback_data=f"user:{username}")]]
-        )
-        await q.message.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=back_kb)
+        rows = list(kb.inline_keyboard) if kb else []
+        rows.append([InlineKeyboardButton("◀ Back", callback_data=f"user:{username}")])
+        await q.message.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup(rows))
 
     elif data.startswith("toggle:"):
         username = data[7:]
@@ -427,6 +446,9 @@ def main():
         states={
             WAITING_FOR_USERNAME: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, create_receive_username),
+            ],
+            WAITING_FOR_MAX_IPS: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, create_receive_max_ips),
             ],
             WAITING_FOR_PATCH_IPS: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, patch_ips_receive),
