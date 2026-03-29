@@ -209,6 +209,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 @require_access
 async def create_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    logger.info("create_start user=%s", update.effective_user.username)
     await update.effective_message.reply_text(
         "Enter username <code>[A-Za-z0-9_.-]</code>, up to 64 chars:",
         parse_mode=ParseMode.HTML,
@@ -220,6 +221,7 @@ async def create_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 @require_access
 async def create_receive_username(update: Update, context: ContextTypes.DEFAULT_TYPE):
     username = update.message.text.strip()
+    logger.info("create_receive_username username=%r", username)
     if not USERNAME_RE.match(username):
         await update.message.reply_text(
             "Invalid username. Use only <code>[A-Za-z0-9_.-]</code>, 1–64 chars. Try again:",
@@ -243,6 +245,7 @@ async def create_receive_max_ips(update: Update, context: ContextTypes.DEFAULT_T
     await q.answer()
     max_ips = int(q.data.split(":")[1])
     username = context.user_data.get("new_username")
+    logger.info("create_receive_max_ips username=%r max_ips=%r", username, max_ips)
 
     try:
         result = api.create_user(username, max_unique_ips=max_ips)
@@ -258,6 +261,7 @@ async def create_receive_max_ips(update: Update, context: ContextTypes.DEFAULT_T
     text, kb = proxy_message(user)
     if kb:
         await q.message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=kb)
+    logger.info("create_receive_max_ips done, ending conversation")
     return ConversationHandler.END
 
 
