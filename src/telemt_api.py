@@ -29,9 +29,15 @@ class TelemtAPI:
     def get_user(self, username: str) -> dict:
         return self._request("GET", f"/v1/users/{username}")
 
-    def create_user(self, username: str) -> dict:
+    def create_user(self, username: str, max_unique_ips: int = 1) -> dict:
         """Returns CreateUserResponse: {user: UserInfo, secret: str}"""
-        return self._request("POST", "/v1/users", json={"username": username, "max_unique_ips": 1})
+        body: dict = {"username": username}
+        if max_unique_ips > 0:
+            body["max_unique_ips"] = max_unique_ips
+        return self._request("POST", "/v1/users", json=body)
+
+    def patch_user(self, username: str, **fields) -> dict:
+        return self._request("PATCH", f"/v1/users/{username}", json=fields)
 
     def delete_user(self, username: str) -> str:
         return self._request("DELETE", f"/v1/users/{username}")
