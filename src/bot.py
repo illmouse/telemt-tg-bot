@@ -21,6 +21,7 @@ from telegram.ext import (
     MessageHandler,
     filters,
 )
+from telegram.request import HTTPXRequest
 
 from telemt_api import TelemtAPI
 
@@ -45,8 +46,10 @@ logging.basicConfig(
     level=logging.INFO,
 )
 logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
 _filter = _RedactToken()
-logging.root.addFilter(_filter)
+for _h in logging.root.handlers:
+    _h.addFilter(_filter)
 logger = logging.getLogger(__name__)
 
 api = TelemtAPI()
@@ -402,7 +405,11 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 def main():
-    app = Application.builder().token(os.environ["BOT_TOKEN"]).build()
+    proxy_url = os.environ.get("PROXY_URL", "").strip()
+    builder = Application.builder().token(os.environ["BOT_TOKEN"])
+    if proxy_url:
+        builder = builder.request(HTTPXRequest(proxy=proxy_url))
+    app = builder.build()
 
     conv = ConversationHandler(
         entry_points=[
