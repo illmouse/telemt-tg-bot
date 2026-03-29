@@ -387,9 +387,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await q.message.edit_text(f"Error: {e}")
             return
         text, kb = proxy_message(user)
-        rows = list(kb.inline_keyboard) if kb else []
-        rows.append([InlineKeyboardButton("◀ Back", callback_data=f"user:{username}")])
-        await q.message.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup(rows))
+        await q.message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=kb)
 
     elif data.startswith("toggle:"):
         username = data[7:]
