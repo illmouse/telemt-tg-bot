@@ -264,7 +264,7 @@ async def patch_ips_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     username = q.data.split(":", 1)[1]
     context.user_data["patch_username"] = username
     await q.message.edit_text(
-        f"Enter new max unique IPs for <b>{username}</b>\n(0 = unlimited):",
+        f"Enter new max unique IPs for <b>{username}</b> (1 or more):",
         parse_mode=ParseMode.HTML,
         reply_markup=CANCEL_KB,
     )
@@ -280,11 +280,15 @@ async def patch_ips_receive(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return WAITING_FOR_PATCH_IPS
 
     value = int(text)
+    if value < 1:
+        await update.message.reply_text(
+            "Value must be 1 or more. The API does not support removing the limit once set:",
+            reply_markup=CANCEL_KB,
+        )
+        return WAITING_FOR_PATCH_IPS
+
     try:
-        if value == 0:
-            user = api.patch_user(username)  # can't clear — just refresh
-        else:
-            user = api.patch_user(username, max_unique_ips=value)
+        user = api.patch_user(username, max_unique_ips=value)
     except Exception as e:
         await update.message.reply_text(f"Error: {e}")
         return ConversationHandler.END
