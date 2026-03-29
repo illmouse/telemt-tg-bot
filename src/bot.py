@@ -66,7 +66,6 @@ LINK_HOST = os.environ.get("LINK_HOST", "").strip()
 
 # Conversation states
 WAITING_FOR_USERNAME = 1
-WAITING_FOR_MAX_IPS = 2
 WAITING_FOR_PATCH_IPS = 3
 
 USERNAME_RE = re.compile(r"^[A-Za-z0-9_.\-]{1,64}$")
@@ -236,32 +235,6 @@ async def create_receive_username(update: Update, context: ContextTypes.DEFAULT_
         parse_mode=ParseMode.HTML,
         reply_markup=MAX_IPS_KB,
     )
-    return WAITING_FOR_MAX_IPS
-
-
-@require_access
-async def create_receive_max_ips(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    await q.answer()
-    max_ips = int(q.data.split(":")[1])
-    username = context.user_data.get("new_username")
-    logger.info("create_receive_max_ips username=%r max_ips=%r", username, max_ips)
-
-    try:
-        result = api.create_user(username, max_unique_ips=max_ips)
-    except Exception as e:
-        await q.message.edit_text(f"Error: {e}")
-        return ConversationHandler.END
-
-    user = result["user"]
-    await q.message.edit_text(
-        f"✅ Created\n\n{fmt_user_info(user)}",
-        parse_mode=ParseMode.HTML,
-    )
-    text, kb = proxy_message(user)
-    if kb:
-        await q.message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=kb)
-    logger.info("create_receive_max_ips done, ending conversation")
     return ConversationHandler.END
 
 
@@ -341,7 +314,29 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await q.message.edit_text("Access denied.")
         return
 
-    if data == "back_list":
+    if data.startswith("maxips:"):
+        max_ips = int(data.split(":")[1])
+        username = context.user_data.get("new_username")
+        logger.info("maxips callback username=%r max_ips=%r", username, max_ips)
+        if not username:
+            await q.message.edit_text("Session expired. Please start over.")
+            return
+        try:
+            result = api.create_user(username, max_unique_ips=max_ips)
+        except Exception as e:
+            await q.message.edit_text(f"Error: {e}")
+            return
+        context.user_data.pop("new_username", None)
+        user = result["user"]
+        await q.message.edit_text(
+            f"✅ Created\n\n{fmt_user_info(user)}",
+            parse_mode=ParseMode.HTML,
+        )
+        text, kb = proxy_message(user)
+        if kb:
+            await q.message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=kb)
+
+    elif data == "back_list":
         try:
             users = api.get_users()
         except Exception as e:
@@ -432,9 +427,6 @@ def main():
         states={
             WAITING_FOR_USERNAME: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, create_receive_username),
-            ],
-            WAITING_FOR_MAX_IPS: [
-                CallbackQueryHandler(create_receive_max_ips, pattern="^maxips:"),
             ],
             WAITING_FOR_PATCH_IPS: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, patch_ips_receive),
