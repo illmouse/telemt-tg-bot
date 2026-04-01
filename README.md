@@ -6,11 +6,17 @@ Telegram bot for managing users on a [telemt](https://github.com/telemt/telemt) 
 
 ## Features
 
-- Create users (enforced single-IP limit via `max_unique_ips=1`)
-- List users with live connection status
-- View user details (connections, active IPs, traffic, quota, expiry)
+- Create users with configurable `max_unique_ips` (prevents sharing proxy credentials)
+- List users as a text overview with active IP / max IP info and status icons
+- Filter user list by state: All / Active / Disabled
+- Paginated list (30 users per page)
+- Search users by name fragment
+- View full user details (connections, active IPs, traffic, quota, expiry)
+- Enable / disable users (via `max_tcp_conns`)
+- Edit `max_unique_ips` on existing users
 - Get a ready-to-forward proxy link message with connect buttons
 - Delete users with confirmation
+- Optional HTTP/SOCKS5 proxy for Telegram API connectivity
 - Access restricted to configured Telegram usernames
 
 ## Requirements
@@ -79,8 +85,11 @@ docker compose up -d --build
 |---|---|
 | Create user | ➕ Create User button or `/create` |
 | List users | 👥 List Users button |
-| View user info | tap user in the list |
+| Filter list | All / 🟢 Active / 🔴 Disabled buttons in the list |
+| Search users | 🔍 Search button or `/search` |
+| View user info | tap user in search results |
 | Get proxy link | 🔗 Get Link from user info |
+| Edit max IPs | ✏️ Max IPs from user info |
+| Enable / disable | 🟢 Enable / 🔴 Disable from user info |
 | Delete user | 🗑 Delete from user info |
 | Cancel input | ✖ Cancel button or `/cancel` |
-# telemt-tg-bot
