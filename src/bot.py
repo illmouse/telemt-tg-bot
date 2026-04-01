@@ -64,7 +64,7 @@ ALLOWED_USERNAMES = set(
 
 LINK_HOST = os.environ.get("LINK_HOST", "").strip()
 
-PAGE_SIZE = 30
+PAGE_SIZE = 10
 
 # Conversation states
 WAITING_FOR_USERNAME = 1
@@ -134,7 +134,7 @@ def fmt_user_info(user: dict) -> str:
     return "\n".join(lines)
 
 
-def fmt_user_line(u: dict) -> str:
+def fmt_user_button(u: dict) -> str:
     disabled = u.get("max_tcp_conns") == 0
     active = u["active_unique_ips"]
     max_ips = u.get("max_unique_ips")
@@ -144,7 +144,7 @@ def fmt_user_line(u: dict) -> str:
     else:
         status = "🟢" if u["current_connections"] > 0 else "⚫"
         ip_part = f"{active}/{max_ips} IPs" if max_ips is not None else f"{active} IPs"
-    return f"{status} <code>{u['username']}</code> — {ip_part}"
+    return f"{status} {u['username']} — {ip_part}"
 
 
 FILTERS = {
@@ -159,13 +159,13 @@ def apply_filter(users: list[dict], f: str) -> list[dict]:
     return [u for u in users if pred(u)]
 
 
-def fmt_users_page(users: list[dict], page: int) -> str:
+def list_keyboard(users: list[dict], total: int, page: int, current_filter: str) -> InlineKeyboardMarkup:
     start = page * PAGE_SIZE
-    lines = [fmt_user_line(u) for u in users[start:start + PAGE_SIZE]]
-    return "\n".join(lines)
+    user_rows = [
+        [InlineKeyboardButton(fmt_user_button(u), callback_data=f"user:{u['username']}")]
+        for u in users[start:start + PAGE_SIZE]
+    ]
 
-
-def list_keyboard(total: int, page: int, current_filter: str) -> InlineKeyboardMarkup:
     filter_row = []
     for key, (label, _) in FILTERS.items():
         text = f"· {label} ·" if key == current_filter else label
@@ -180,7 +180,7 @@ def list_keyboard(total: int, page: int, current_filter: str) -> InlineKeyboardM
     if (page + 1) * PAGE_SIZE < total:
         nav_row.append(InlineKeyboardButton("▶", callback_data=f"list_page:{current_filter}:{page + 1}"))
 
-    rows = [filter_row]
+    rows = user_rows + [filter_row]
     if nav_row:
         rows.append(nav_row)
     return InlineKeyboardMarkup(rows)
@@ -402,11 +402,10 @@ async def list_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     context.user_data["list_users"] = users
     filtered = apply_filter(users, "all")
-    text = f"<b>Users ({len(filtered)}/{len(users)})</b>\n\n{fmt_users_page(filtered, 0)}"
     await update.effective_message.reply_text(
-        text,
+        f"<b>Users ({len(filtered)}/{len(users)})</b>",
         parse_mode=ParseMode.HTML,
-        reply_markup=list_keyboard(len(filtered), 0, "all"),
+        reply_markup=list_keyboard(filtered, len(filtered), 0, "all"),
     )
 
 
@@ -441,11 +440,10 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await q.message.edit_text(f"Error: {e}")
                 return
         filtered = apply_filter(users, f)
-        text = f"<b>Users ({len(filtered)}/{len(users)})</b>\n\n{fmt_users_page(filtered, page)}"
         await q.message.edit_text(
-            text,
+            f"<b>Users ({len(filtered)}/{len(users)})</b>",
             parse_mode=ParseMode.HTML,
-            reply_markup=list_keyboard(len(filtered), page, f),
+            reply_markup=list_keyboard(filtered, len(filtered), page, f),
         )
 
     elif data.startswith("user:"):
