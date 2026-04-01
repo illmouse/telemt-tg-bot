@@ -64,15 +64,18 @@ ALLOWED_USERNAMES = set(
 
 LINK_HOST = os.environ.get("LINK_HOST", "").strip()
 
+PAGE_SIZE = 10
+
 # Conversation states
 WAITING_FOR_USERNAME = 1
 WAITING_FOR_MAX_IPS = 2
 WAITING_FOR_PATCH_IPS = 3
+WAITING_FOR_SEARCH = 4
 
 USERNAME_RE = re.compile(r"^[A-Za-z0-9_.\-]{1,64}$")
 
 MAIN_KEYBOARD = ReplyKeyboardMarkup(
-    [["➕ Create User", "👥 List Users"]],
+    [["➕ Create User", "👥 List Users", "🔍 Search"]],
     resize_keyboard=True,
 )
 
@@ -131,6 +134,52 @@ def fmt_user_info(user: dict) -> str:
     return "\n".join(lines)
 
 
+def fmt_user_line(u: dict) -> str:
+    disabled = u.get("max_tcp_conns") == 0
+    active = u["active_unique_ips"]
+    max_ips = u.get("max_unique_ips")
+    if disabled:
+        status = "🔴"
+        ip_part = "disabled"
+    else:
+        status = "🟢" if u["current_connections"] > 0 else "⚫"
+        ip_part = f"{active}/{max_ips} IPs" if max_ips is not None else f"{active} IPs"
+    return f"{status} <code>{u['username']}</code> — {ip_part}"
+
+
+def fmt_users_page(users: list[dict], page: int) -> str:
+    start = page * PAGE_SIZE
+    page_users = users[start:start + PAGE_SIZE]
+    lines = [fmt_user_line(u) for u in page_users]
+    return "\n".join(lines)
+
+
+def page_keyboard(total: int, page: int, callback_prefix: str) -> InlineKeyboardMarkup:
+    total_pages = max(1, (total + PAGE_SIZE - 1) // PAGE_SIZE)
+    row = []
+    if page > 0:
+        row.append(InlineKeyboardButton("◀", callback_data=f"{callback_prefix}:{page - 1}"))
+    row.append(InlineKeyboardButton(f"{page + 1}/{total_pages}", callback_data="noop"))
+    if (page + 1) * PAGE_SIZE < total:
+        row.append(InlineKeyboardButton("▶", callback_data=f"{callback_prefix}:{page + 1}"))
+    return InlineKeyboardMarkup([row])
+
+
+def search_results_keyboard(users: list[dict]) -> InlineKeyboardMarkup:
+    rows = []
+    for u in users:
+        disabled = u.get("max_tcp_conns") == 0
+        active = u["active_unique_ips"]
+        max_ips = u.get("max_unique_ips")
+        status = "🔴" if disabled else ("🟢" if u["current_connections"] > 0 else "⚫")
+        ip_part = f"{active}/{max_ips}" if max_ips is not None else str(active)
+        rows.append([InlineKeyboardButton(
+            f"{status} {u['username']} — {ip_part} IPs",
+            callback_data=f"user:{u['username']}",
+        )])
+    return InlineKeyboardMarkup(rows)
+
+
 def user_keyboard(username: str, user: dict) -> InlineKeyboardMarkup:
     disabled = user.get("max_tcp_conns") == 0
     toggle_label = "🟢 Enable" if disabled else "🔴 Disable"
@@ -143,12 +192,10 @@ def user_keyboard(username: str, user: dict) -> InlineKeyboardMarkup:
             InlineKeyboardButton(toggle_label, callback_data=f"toggle:{username}"),
             InlineKeyboardButton("🗑 Delete", callback_data=f"del:{username}"),
         ],
-        [InlineKeyboardButton("◀ Back", callback_data="back_list")],
     ])
 
 
 def _rewrite_link(link: str) -> str:
-    """Rewrite server= in a tg://proxy link to LINK_HOST if configured."""
     if not LINK_HOST:
         return link
     parsed = urlparse(link)
@@ -158,34 +205,17 @@ def _rewrite_link(link: str) -> str:
 
 
 def proxy_message(user: dict) -> tuple[str, InlineKeyboardMarkup | None]:
-    """Returns (text, keyboard) for a forwardable proxy link message."""
     links = user.get("links", {})
     username = user["username"]
     rows = []
-
     for link in (links.get("secure") or [])[:1]:
         rows.append([InlineKeyboardButton("🔒 Secure", url=_rewrite_link(link))])
     for link in (links.get("classic") or [])[:1]:
         rows.append([InlineKeyboardButton("📡 Classic", url=_rewrite_link(link))])
     for link in (links.get("tls") or [])[:1]:
         rows.append([InlineKeyboardButton("🔐 TLS", url=_rewrite_link(link))])
-
     text = f"🔒 <b>MTProxy</b>\nUser: <code>{username}</code>"
     return text, (InlineKeyboardMarkup(rows) if rows else None)
-
-
-def users_keyboard(users: list[dict]) -> InlineKeyboardMarkup:
-    rows = []
-    for u in users:
-        name = u["username"]
-        conns = u["current_connections"]
-        disabled = u.get("max_tcp_conns") == 0
-        status = "🔴" if disabled else ("🟢" if conns > 0 else "⚫")
-        rows.append(
-            [InlineKeyboardButton(f"{status} {name} ({conns})", callback_data=f"user:{name}")]
-        )
-    rows.append([InlineKeyboardButton("✖ Close", callback_data="cancel")])
-    return InlineKeyboardMarkup(rows)
 
 
 # ── Handlers ──────────────────────────────────────────────────────────────────
@@ -305,6 +335,40 @@ async def patch_ips_receive(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 @require_access
+async def search_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.effective_message.reply_text(
+        "Enter username or part of it:",
+        reply_markup=CANCEL_KB,
+    )
+    return WAITING_FOR_SEARCH
+
+
+@require_access
+async def search_receive(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.message.text.strip().lower()
+    try:
+        users = api.get_users()
+    except Exception as e:
+        await update.message.reply_text(f"Error: {e}")
+        return ConversationHandler.END
+
+    matches = [u for u in users if query in u["username"].lower()]
+    if not matches:
+        await update.message.reply_text(
+            f"No users found for <code>{query}</code>.",
+            parse_mode=ParseMode.HTML,
+            reply_markup=MAIN_KEYBOARD,
+        )
+        return ConversationHandler.END
+
+    await update.message.reply_text(
+        f"Found {len(matches)} user(s):",
+        reply_markup=search_results_keyboard(matches),
+    )
+    return ConversationHandler.END
+
+
+@require_access
 async def list_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         users = api.get_users()
@@ -314,9 +378,13 @@ async def list_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not users:
         await update.effective_message.reply_text("No users configured.")
         return
+
+    context.user_data["list_users"] = users
+    text = f"<b>Users ({len(users)})</b>\n\n{fmt_users_page(users, 0)}"
     await update.effective_message.reply_text(
-        f"Users ({len(users)}):",
-        reply_markup=users_keyboard(users),
+        text,
+        parse_mode=ParseMode.HTML,
+        reply_markup=page_keyboard(len(users), 0, "list_page"),
     )
 
 
@@ -332,41 +400,30 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await q.message.edit_reply_markup(None)
         return
 
+    if data == "noop":
+        return
+
     if not is_allowed(update):
         await q.message.edit_text("Access denied.")
         return
 
-    if data.startswith("maxips:"):
-        max_ips = int(data.split(":")[1])
-        username = context.user_data.get("new_username")
-        logger.info("maxips callback username=%r max_ips=%r", username, max_ips)
-        if not username:
-            await q.message.edit_text("Session expired. Please start over.")
-            return
-        try:
-            result = api.create_user(username, max_unique_ips=max_ips)
-        except Exception as e:
-            await q.message.edit_text(f"Error: {e}")
-            return
-        context.user_data.pop("new_username", None)
-        user = result["user"]
-        await q.message.edit_text(
-            f"✅ Created\n\n{fmt_user_info(user)}",
-            parse_mode=ParseMode.HTML,
-        )
-        text, kb = proxy_message(user)
-        await q.message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=kb)
-
-    elif data == "back_list":
-        try:
-            users = api.get_users()
-        except Exception as e:
-            await q.message.edit_text(f"Error: {e}")
-            return
+    if data.startswith("list_page:"):
+        page = int(data.split(":")[1])
+        users = context.user_data.get("list_users", [])
         if not users:
-            await q.message.edit_text("No users configured.")
-            return
-        await q.message.edit_text(f"Users ({len(users)}):", reply_markup=users_keyboard(users))
+            # re-fetch if user_data was lost
+            try:
+                users = api.get_users()
+                context.user_data["list_users"] = users
+            except Exception as e:
+                await q.message.edit_text(f"Error: {e}")
+                return
+        text = f"<b>Users ({len(users)})</b>\n\n{fmt_users_page(users, page)}"
+        await q.message.edit_text(
+            text,
+            parse_mode=ParseMode.HTML,
+            reply_markup=page_keyboard(len(users), page, "list_page"),
+        )
 
     elif data.startswith("user:"):
         username = data[5:]
@@ -404,6 +461,10 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             fmt_user_info(user), parse_mode=ParseMode.HTML, reply_markup=user_keyboard(username, user)
         )
 
+    elif data.startswith("patchips:"):
+        # entry point is handled by ConversationHandler; this branch shouldn't fire
+        pass
+
     elif data.startswith("del:"):
         username = data[4:]
         kb = InlineKeyboardMarkup([[
@@ -439,6 +500,8 @@ def main():
         entry_points=[
             CommandHandler("create", create_start),
             MessageHandler(filters.Text(["➕ Create User"]), create_start),
+            CommandHandler("search", search_start),
+            MessageHandler(filters.Text(["🔍 Search"]), search_start),
             CallbackQueryHandler(patch_ips_start, pattern="^patchips:"),
         ],
         states={
@@ -450,6 +513,9 @@ def main():
             ],
             WAITING_FOR_PATCH_IPS: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, patch_ips_receive),
+            ],
+            WAITING_FOR_SEARCH: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, search_receive),
             ],
         },
         fallbacks=[
