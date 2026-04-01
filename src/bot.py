@@ -64,7 +64,7 @@ ALLOWED_USERNAMES = set(
 
 LINK_HOST = os.environ.get("LINK_HOST", "").strip()
 
-PAGE_SIZE = 10
+PAGE_SIZE = 30
 
 # Conversation states
 WAITING_FOR_USERNAME = 1
@@ -147,22 +147,43 @@ def fmt_user_line(u: dict) -> str:
     return f"{status} <code>{u['username']}</code> — {ip_part}"
 
 
+FILTERS = {
+    "all":      ("All",         lambda u: True),
+    "active":   ("🟢 Active",   lambda u: u["current_connections"] > 0 and u.get("max_tcp_conns") != 0),
+    "disabled": ("🔴 Disabled", lambda u: u.get("max_tcp_conns") == 0),
+}
+
+
+def apply_filter(users: list[dict], f: str) -> list[dict]:
+    pred = FILTERS.get(f, FILTERS["all"])[1]
+    return [u for u in users if pred(u)]
+
+
 def fmt_users_page(users: list[dict], page: int) -> str:
     start = page * PAGE_SIZE
-    page_users = users[start:start + PAGE_SIZE]
-    lines = [fmt_user_line(u) for u in page_users]
+    lines = [fmt_user_line(u) for u in users[start:start + PAGE_SIZE]]
     return "\n".join(lines)
 
 
-def page_keyboard(total: int, page: int, callback_prefix: str) -> InlineKeyboardMarkup:
+def list_keyboard(total: int, page: int, current_filter: str) -> InlineKeyboardMarkup:
+    filter_row = []
+    for key, (label, _) in FILTERS.items():
+        text = f"· {label} ·" if key == current_filter else label
+        filter_row.append(InlineKeyboardButton(text, callback_data=f"list_page:{key}:0"))
+
+    nav_row = []
     total_pages = max(1, (total + PAGE_SIZE - 1) // PAGE_SIZE)
-    row = []
     if page > 0:
-        row.append(InlineKeyboardButton("◀", callback_data=f"{callback_prefix}:{page - 1}"))
-    row.append(InlineKeyboardButton(f"{page + 1}/{total_pages}", callback_data="noop"))
+        nav_row.append(InlineKeyboardButton("◀", callback_data=f"list_page:{current_filter}:{page - 1}"))
+    if total_pages > 1:
+        nav_row.append(InlineKeyboardButton(f"{page + 1}/{total_pages}", callback_data="noop"))
     if (page + 1) * PAGE_SIZE < total:
-        row.append(InlineKeyboardButton("▶", callback_data=f"{callback_prefix}:{page + 1}"))
-    return InlineKeyboardMarkup([row])
+        nav_row.append(InlineKeyboardButton("▶", callback_data=f"list_page:{current_filter}:{page + 1}"))
+
+    rows = [filter_row]
+    if nav_row:
+        rows.append(nav_row)
+    return InlineKeyboardMarkup(rows)
 
 
 def search_results_keyboard(users: list[dict]) -> InlineKeyboardMarkup:
@@ -380,11 +401,12 @@ async def list_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     context.user_data["list_users"] = users
-    text = f"<b>Users ({len(users)})</b>\n\n{fmt_users_page(users, 0)}"
+    filtered = apply_filter(users, "all")
+    text = f"<b>Users ({len(filtered)}/{len(users)})</b>\n\n{fmt_users_page(filtered, 0)}"
     await update.effective_message.reply_text(
         text,
         parse_mode=ParseMode.HTML,
-        reply_markup=page_keyboard(len(users), 0, "list_page"),
+        reply_markup=list_keyboard(len(filtered), 0, "all"),
     )
 
 
@@ -408,21 +430,22 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if data.startswith("list_page:"):
-        page = int(data.split(":")[1])
+        _, f, page_str = data.split(":")
+        page = int(page_str)
         users = context.user_data.get("list_users", [])
         if not users:
-            # re-fetch if user_data was lost
             try:
                 users = api.get_users()
                 context.user_data["list_users"] = users
             except Exception as e:
                 await q.message.edit_text(f"Error: {e}")
                 return
-        text = f"<b>Users ({len(users)})</b>\n\n{fmt_users_page(users, page)}"
+        filtered = apply_filter(users, f)
+        text = f"<b>Users ({len(filtered)}/{len(users)})</b>\n\n{fmt_users_page(filtered, page)}"
         await q.message.edit_text(
             text,
             parse_mode=ParseMode.HTML,
-            reply_markup=page_keyboard(len(users), page, "list_page"),
+            reply_markup=list_keyboard(len(filtered), page, f),
         )
 
     elif data.startswith("user:"):
