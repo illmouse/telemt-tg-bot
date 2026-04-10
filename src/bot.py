@@ -558,7 +558,7 @@ def main():
     app.add_handler(CallbackQueryHandler(on_callback))
     app.add_error_handler(on_error)
 
-    app.run_polling(read_timeout=15, write_timeout=15, connect_timeout=15, pool_timeout=15)
+    app.run_polling(read_timeout=8, write_timeout=15, connect_timeout=15, pool_timeout=15, timeout=3)
 
 
 if __name__ == "__main__":
