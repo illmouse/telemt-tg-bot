@@ -54,6 +54,7 @@ BOT_TOKEN=123456:ABC-your-bot-token
 ALLOWED_USERNAMES=alice,bob             # comma-separated Telegram usernames; leave empty to allow all
 LINK_HOST=1.2.3.4                       # public IP/hostname to rewrite into proxy links; leave empty to use API-provided links as-is
 PROXY_URL=socks5://user:pass@host:port  # optional proxy for Telegram API connections; leave empty to connect directly
+LOG_LEVEL=INFO                          # logging verbosity: DEBUG, INFO, WARNING, ERROR (default: INFO)
 ```
 
 ## Running
