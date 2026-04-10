@@ -515,7 +515,11 @@ def main():
     proxy_url = os.environ.get("PROXY_URL", "").strip()
     builder = Application.builder().token(os.environ["BOT_TOKEN"])
     if proxy_url:
-        builder = builder.request(HTTPXRequest(proxy=proxy_url))
+        builder = (
+            builder
+            .request(HTTPXRequest(proxy=proxy_url))
+            .get_updates_request(HTTPXRequest(proxy=proxy_url))
+        )
     app = builder.build()
 
     conv = ConversationHandler(
