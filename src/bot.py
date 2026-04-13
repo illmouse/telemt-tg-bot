@@ -531,6 +531,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             else:
                 api.patch_user(username, max_tcp_conns=0)
             user = api.get_user(username)
+            logger.info("toggle re-fetch user=%r data=%r", username, user)
         except Exception as e:
             await q.message.edit_text(f"Error: {e}")
             return
