@@ -527,9 +527,10 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             user = api.get_user(username)
             if user.get("max_tcp_conns") == 0:
-                user = api.patch_user(username, max_tcp_conns=ENABLED_TCP_CONNS)
+                api.patch_user(username, max_tcp_conns=ENABLED_TCP_CONNS)
             else:
-                user = api.patch_user(username, max_tcp_conns=0)
+                api.patch_user(username, max_tcp_conns=0)
+            user = api.get_user(username)
         except Exception as e:
             await q.message.edit_text(f"Error: {e}")
             return
