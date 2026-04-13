@@ -2,6 +2,7 @@ import logging
 import os
 import re
 import warnings
+from datetime import datetime, timezone
 from functools import wraps
 from urllib.parse import urlparse, parse_qs, urlencode
 
@@ -67,6 +68,9 @@ LINK_HOST = os.environ.get("LINK_HOST", "").strip()
 
 PAGE_SIZE = 10
 
+DISABLE_EXPIRY = "1970-01-01T00:00:00Z"
+ENABLE_EXPIRY = "2099-12-31T23:59:59Z"
+
 # Conversation states
 WAITING_FOR_USERNAME = 1
 WAITING_FOR_MAX_IPS = 2
@@ -78,7 +82,7 @@ USERNAME_RE = re.compile(r"^[A-Za-z0-9_.\-]{1,64}$")
 MAIN_KEYBOARD = ReplyKeyboardMarkup(
     [
         ["➕ Create User", "👥 List Users", "🔍 Search"],
-        ["🟢 Active Peers", "🔴 Disabled Peers"],
+        ["🟢 Active Users", "🔴 Disabled Users"],
     ],
     resize_keyboard=True,
 )
@@ -125,16 +129,26 @@ async def cancel_conv_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
     return ConversationHandler.END
 
 
+def is_disabled(user: dict) -> bool:
+    exp = user.get("expiration_rfc3339")
+    if not exp:
+        return False
+    try:
+        return datetime.fromisoformat(exp.replace("Z", "+00:00")) < datetime.now(timezone.utc)
+    except Exception:
+        return False
+
+
 # ── Formatting ────────────────────────────────────────────────────────────────
 
 def fmt_user_info(user: dict) -> str:
-    disabled = user.get("max_unique_ips") == 0
+    disabled = is_disabled(user)
     lines = [f"<b>{user['username']}</b>" + (" 🔴 disabled" if disabled else "")]
-    if user.get("max_unique_ips") is not None and not disabled:
+    if user.get("max_unique_ips") is not None:
         lines.append(f"Max IPs: {user['max_unique_ips']}")
     if user.get("max_tcp_conns") is not None:
         lines.append(f"Max connections: {user['max_tcp_conns']}")
-    if user.get("expiration_rfc3339"):
+    if user.get("expiration_rfc3339") and not disabled:
         lines.append(f"Expires: {user['expiration_rfc3339'][:10]}")
     if user.get("data_quota_bytes") is not None:
         gb = user["data_quota_bytes"] / 1_000_000_000
@@ -149,7 +163,7 @@ def fmt_user_info(user: dict) -> str:
 
 
 def fmt_user_button(u: dict) -> str:
-    disabled = u.get("max_unique_ips") == 0
+    disabled = is_disabled(u)
     active = u["active_unique_ips"]
     max_ips = u.get("max_unique_ips")
     if disabled:
@@ -163,8 +177,8 @@ def fmt_user_button(u: dict) -> str:
 
 FILTERS = {
     "all":      ("All",         lambda u: True),
-    "active":   ("🟢 Active",   lambda u: u["current_connections"] > 0 and u.get("max_unique_ips") != 0),
-    "disabled": ("🔴 Disabled", lambda u: u.get("max_unique_ips") == 0),
+    "active":   ("🟢 Active",   lambda u: u["current_connections"] > 0 and not is_disabled(u)),
+    "disabled": ("🔴 Disabled", lambda u: is_disabled(u)),
 }
 
 
@@ -203,7 +217,7 @@ def list_keyboard(users: list[dict], total: int, page: int, current_filter: str)
 def search_results_keyboard(users: list[dict]) -> InlineKeyboardMarkup:
     rows = []
     for u in users:
-        disabled = u.get("max_unique_ips") == 0
+        disabled = is_disabled(u)
         active = u["active_unique_ips"]
         max_ips = u.get("max_unique_ips")
         status = "🔴" if disabled else ("🟢" if u["current_connections"] > 0 else "⚫")
@@ -216,7 +230,7 @@ def search_results_keyboard(users: list[dict]) -> InlineKeyboardMarkup:
 
 
 def user_keyboard(username: str, user: dict) -> InlineKeyboardMarkup:
-    disabled = user.get("max_unique_ips") == 0
+    disabled = is_disabled(user)
     toggle_label = "🟢 Enable" if disabled else "🔴 Disable"
     return InlineKeyboardMarkup([
         [
@@ -332,7 +346,7 @@ async def patch_ips_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     username = q.data.split(":", 1)[1]
     context.user_data["patch_username"] = username
     await q.message.edit_text(
-        f"Enter new max unique IPs for <b>{username}</b> (0 to disable, 1 or more to set limit):",
+        f"Enter new max unique IPs for <b>{username}</b> (1 or more):",
         parse_mode=ParseMode.HTML,
         reply_markup=CANCEL_KB,
     )
@@ -348,6 +362,10 @@ async def patch_ips_receive(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return WAITING_FOR_PATCH_IPS
 
     value = int(text)
+    if value < 1:
+        await update.message.reply_text("Enter a number (1 or more):", reply_markup=CANCEL_KB)
+        return WAITING_FOR_PATCH_IPS
+
     try:
         user = api.patch_user(username, max_unique_ips=value)
     except Exception as e:
@@ -516,10 +534,10 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         username = data[7:]
         try:
             user = api.get_user(username)
-            if user.get("max_unique_ips") == 0:
-                api.patch_user(username, max_unique_ips=1)
+            if is_disabled(user):
+                api.patch_user(username, expiration_rfc3339=ENABLE_EXPIRY)
             else:
-                api.patch_user(username, max_unique_ips=0)
+                api.patch_user(username, expiration_rfc3339=DISABLE_EXPIRY)
             user = api.get_user(username)
         except Exception as e:
             await q.message.edit_text(f"Error: {e}")
@@ -602,8 +620,8 @@ def main():
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(conv)
     app.add_handler(MessageHandler(filters.Text(["👥 List Users"]), list_users))
-    app.add_handler(MessageHandler(filters.Text(["🟢 Active Peers"]), active_peers))
-    app.add_handler(MessageHandler(filters.Text(["🔴 Disabled Peers"]), disabled_peers))
+    app.add_handler(MessageHandler(filters.Text(["🟢 Active Users"]), active_peers))
+    app.add_handler(MessageHandler(filters.Text(["🔴 Disabled Users"]), disabled_peers))
     app.add_handler(CallbackQueryHandler(on_callback))
     app.add_error_handler(on_error)
 
