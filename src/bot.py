@@ -93,9 +93,6 @@ MAX_IPS_KB = ReplyKeyboardMarkup(
     one_time_keyboard=True,
 )
 
-# max_tcp_conns value used to re-enable a disabled user
-ENABLED_TCP_CONNS = 65535
-
 
 def is_allowed(update: Update) -> bool:
     if not ALLOWED_USERNAMES:
@@ -131,11 +128,11 @@ async def cancel_conv_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
 # ── Formatting ────────────────────────────────────────────────────────────────
 
 def fmt_user_info(user: dict) -> str:
-    disabled = user.get("max_tcp_conns") == 0
+    disabled = user.get("max_unique_ips") == 0
     lines = [f"<b>{user['username']}</b>" + (" 🔴 disabled" if disabled else "")]
-    if user.get("max_unique_ips") is not None:
+    if user.get("max_unique_ips") is not None and not disabled:
         lines.append(f"Max IPs: {user['max_unique_ips']}")
-    if user.get("max_tcp_conns") is not None and not disabled:
+    if user.get("max_tcp_conns") is not None:
         lines.append(f"Max connections: {user['max_tcp_conns']}")
     if user.get("expiration_rfc3339"):
         lines.append(f"Expires: {user['expiration_rfc3339'][:10]}")
@@ -152,7 +149,7 @@ def fmt_user_info(user: dict) -> str:
 
 
 def fmt_user_button(u: dict) -> str:
-    disabled = u.get("max_tcp_conns") == 0
+    disabled = u.get("max_unique_ips") == 0
     active = u["active_unique_ips"]
     max_ips = u.get("max_unique_ips")
     if disabled:
@@ -166,8 +163,8 @@ def fmt_user_button(u: dict) -> str:
 
 FILTERS = {
     "all":      ("All",         lambda u: True),
-    "active":   ("🟢 Active",   lambda u: u["current_connections"] > 0 and u.get("max_tcp_conns") != 0),
-    "disabled": ("🔴 Disabled", lambda u: u.get("max_tcp_conns") == 0),
+    "active":   ("🟢 Active",   lambda u: u["current_connections"] > 0 and u.get("max_unique_ips") != 0),
+    "disabled": ("🔴 Disabled", lambda u: u.get("max_unique_ips") == 0),
 }
 
 
@@ -206,7 +203,7 @@ def list_keyboard(users: list[dict], total: int, page: int, current_filter: str)
 def search_results_keyboard(users: list[dict]) -> InlineKeyboardMarkup:
     rows = []
     for u in users:
-        disabled = u.get("max_tcp_conns") == 0
+        disabled = u.get("max_unique_ips") == 0
         active = u["active_unique_ips"]
         max_ips = u.get("max_unique_ips")
         status = "🔴" if disabled else ("🟢" if u["current_connections"] > 0 else "⚫")
@@ -219,7 +216,7 @@ def search_results_keyboard(users: list[dict]) -> InlineKeyboardMarkup:
 
 
 def user_keyboard(username: str, user: dict) -> InlineKeyboardMarkup:
-    disabled = user.get("max_tcp_conns") == 0
+    disabled = user.get("max_unique_ips") == 0
     toggle_label = "🟢 Enable" if disabled else "🔴 Disable"
     return InlineKeyboardMarkup([
         [
@@ -335,7 +332,7 @@ async def patch_ips_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     username = q.data.split(":", 1)[1]
     context.user_data["patch_username"] = username
     await q.message.edit_text(
-        f"Enter new max unique IPs for <b>{username}</b> (1 or more):",
+        f"Enter new max unique IPs for <b>{username}</b> (0 to disable, 1 or more to set limit):",
         parse_mode=ParseMode.HTML,
         reply_markup=CANCEL_KB,
     )
@@ -351,13 +348,6 @@ async def patch_ips_receive(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return WAITING_FOR_PATCH_IPS
 
     value = int(text)
-    if value < 1:
-        await update.message.reply_text(
-            "Value must be 1 or more. The API does not support removing the limit once set:",
-            reply_markup=CANCEL_KB,
-        )
-        return WAITING_FOR_PATCH_IPS
-
     try:
         user = api.patch_user(username, max_unique_ips=value)
     except Exception as e:
@@ -526,12 +516,11 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         username = data[7:]
         try:
             user = api.get_user(username)
-            if user.get("max_tcp_conns") == 0:
-                api.patch_user(username, max_tcp_conns=ENABLED_TCP_CONNS)
+            if user.get("max_unique_ips") == 0:
+                api.patch_user(username, max_unique_ips=1)
             else:
-                api.patch_user(username, max_tcp_conns=0)
+                api.patch_user(username, max_unique_ips=0)
             user = api.get_user(username)
-            logger.info("toggle re-fetch user=%r data=%r", username, user)
         except Exception as e:
             await q.message.edit_text(f"Error: {e}")
             return
