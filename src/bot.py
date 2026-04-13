@@ -76,7 +76,10 @@ WAITING_FOR_SEARCH = 4
 USERNAME_RE = re.compile(r"^[A-Za-z0-9_.\-]{1,64}$")
 
 MAIN_KEYBOARD = ReplyKeyboardMarkup(
-    [["➕ Create User", "👥 List Users", "🔍 Search"]],
+    [
+        ["➕ Create User", "👥 List Users", "🔍 Search"],
+        ["🟢 Active Peers", "🔴 Disabled Peers"],
+    ],
     resize_keyboard=True,
 )
 
@@ -110,6 +113,19 @@ def require_access(func):
         return await func(update, context)
 
     return wrapper
+
+
+async def cancel_conv_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    if q:
+        await q.answer()
+        try:
+            await q.message.delete()
+        except Exception:
+            await q.message.edit_reply_markup(None)
+    else:
+        await update.message.reply_text("Cancelled.", reply_markup=MAIN_KEYBOARD)
+    return ConversationHandler.END
 
 
 # ── Formatting ────────────────────────────────────────────────────────────────
@@ -410,6 +426,44 @@ async def list_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+@require_access
+async def active_peers(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        users = api.get_users()
+    except Exception as e:
+        await update.effective_message.reply_text(f"Error: {e}")
+        return
+    filtered = apply_filter(users, "active")
+    if not filtered:
+        await update.effective_message.reply_text("No active peers.", reply_markup=MAIN_KEYBOARD)
+        return
+    context.user_data["list_users"] = users
+    await update.effective_message.reply_text(
+        f"<b>Active peers ({len(filtered)}/{len(users)})</b>",
+        parse_mode=ParseMode.HTML,
+        reply_markup=list_keyboard(filtered, len(filtered), 0, "active"),
+    )
+
+
+@require_access
+async def disabled_peers(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        users = api.get_users()
+    except Exception as e:
+        await update.effective_message.reply_text(f"Error: {e}")
+        return
+    filtered = apply_filter(users, "disabled")
+    if not filtered:
+        await update.effective_message.reply_text("No disabled peers.", reply_markup=MAIN_KEYBOARD)
+        return
+    context.user_data["list_users"] = users
+    await update.effective_message.reply_text(
+        f"<b>Disabled peers ({len(filtered)}/{len(users)})</b>",
+        parse_mode=ParseMode.HTML,
+        reply_markup=list_keyboard(filtered, len(filtered), 0, "disabled"),
+    )
+
+
 async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
@@ -545,10 +599,8 @@ def main():
             ],
         },
         fallbacks=[
-            CommandHandler("cancel", lambda u, c: ConversationHandler.END),
-            CallbackQueryHandler(
-                lambda u, c: ConversationHandler.END, pattern="^cancel_conv$"
-            ),
+            CommandHandler("cancel", cancel_conv_handler),
+            CallbackQueryHandler(cancel_conv_handler, pattern="^cancel_conv$"),
         ],
         per_message=False,
     )
@@ -559,6 +611,8 @@ def main():
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(conv)
     app.add_handler(MessageHandler(filters.Text(["👥 List Users"]), list_users))
+    app.add_handler(MessageHandler(filters.Text(["🟢 Active Peers"]), active_peers))
+    app.add_handler(MessageHandler(filters.Text(["🔴 Disabled Peers"]), disabled_peers))
     app.add_handler(CallbackQueryHandler(on_callback))
     app.add_error_handler(on_error)
 
